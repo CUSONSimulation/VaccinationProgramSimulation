@@ -89,15 +89,43 @@ def password_entered():
         st.session_state["password_correct"] = False
 
 
-@st.cache_data
 def load_settings():
-    return tomllib.load(open("settings.toml", "rb"))
+    """Load settings from settings.toml file"""
+    try:
+        return tomllib.load(open("settings.toml", "rb"))
+    except Exception as e:
+        log.exception(f"Error loading settings: {e}")
+        # Return minimal default settings if loading fails
+        return {
+            "title": "Vaccination Program Simulation",
+            "error_message": "An error occurred",
+            "user_name": "Public Health Nurse",
+            "user_avatar": "assets/User.png",
+            "assistant_name": "Noa Martinez",
+            "assistant_avatar": "assets/Noa.jpg",
+            "intro": "Welcome to the simulation",
+            "warning": "This is a simulation",
+            "instruction": "You are Noa, a nursing instructor",
+            "sam_instruction": "You are Sam, a corrections manager",
+            "noa_instruction": "You are Noa, a nursing instructor",
+            "sam": {"name": "Sam Richards", "avatar": "assets/Sam.jpg", "voice": "onyx"},
+            "noa": {"name": "Noa Martinez", "avatar": "assets/Noa.jpg", "voice": "nova"},
+            "parameters": {"model": "gpt-4o", "temperature": 0.7}
+        }
 
 
 @st.cache_data
 def local_css(file_name):
-    with open(file_name) as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    try:
+        with open(file_name) as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    except:
+        # If CSS file is missing, use basic styling
+        st.markdown("""
+        <style>
+        body {font-family: Arial, sans-serif;}
+        </style>
+        """, unsafe_allow_html=True)
 
 
 def speech_to_text(client, audio):
@@ -120,9 +148,9 @@ def text_to_speech(client, text):
         log.debug(f"TTS: {text}")
         # Use the appropriate voice based on the current active agent
         if "sam_active" in st.session_state and st.session_state.sam_active:
-            current_voice = st.session_state.settings["sam"]["voice"]
+            current_voice = "onyx"  # Sam's voice
         else:
-            current_voice = st.session_state.settings["noa"]["voice"]
+            current_voice = "nova"  # Noa's voice
         
         response = client.audio.speech.create(
             model="tts-1",
@@ -144,35 +172,6 @@ def autoplay_audio(audio_data):
     st.markdown(md, unsafe_allow_html=True)
 
 
-# Send prompt to Anthropic and get response
-def stream_response_anthropic(client, messages):
-    try:
-        log.debug(f"Sending text request to Anthropic: {messages[-1]['content']}")
-        
-        # Use the appropriate instruction based on which agent is active
-        if "sam_active" in st.session_state and st.session_state.sam_active:
-            system_content = st.session_state.settings["sam_instruction"]
-        else:
-            system_content = st.session_state.settings["noa_instruction"]
-        
-        stream = client.messages.create(
-            model=st.session_state.settings["parameters"]["model"],
-            messages=messages[1:],
-            max_tokens=1000,
-            system=system_content,
-            temperature=st.session_state.settings["parameters"]["temperature"],
-            stream=True,
-        )
-        for chunk in stream:
-            if isinstance(
-                chunk,
-                anthropic.types.raw_content_block_delta_event.RawContentBlockDeltaEvent,
-            ):
-                yield chunk.delta.text
-    except Exception as e:
-        log.exception("")
-
-
 # Send prompt to OpenAI and get response
 def stream_response_openai(client, messages):
     try:
@@ -181,18 +180,18 @@ def stream_response_openai(client, messages):
         # Get the correct system message based on which agent is active
         if "sam_active" in st.session_state and st.session_state.sam_active:
             # If Sam is active, use Sam's instruction
-            messages_to_send = [{"role": "system", "content": st.session_state.settings["sam_instruction"]}] + messages[1:]
+            instruction = st.session_state.settings.get("sam_instruction", "You are Sam, a corrections manager")
+            messages_to_send = [{"role": "system", "content": instruction}] + messages[1:]
         else:
             # Otherwise use Noa's instruction
-            messages_to_send = [{"role": "system", "content": st.session_state.settings["noa_instruction"]}] + messages[1:]
+            instruction = st.session_state.settings.get("noa_instruction", "You are Noa, a nursing instructor")
+            messages_to_send = [{"role": "system", "content": instruction}] + messages[1:]
         
-        # Optimize for faster responses by setting max_tokens appropriately
-        # This helps avoid unnecessary computation for very long responses
-        # Adjust the max_tokens value based on your needs
+        # Optimize for faster responses
         stream = client.chat.completions.create(
-            model=st.session_state.settings["parameters"]["model"],
+            model="gpt-4o",  # Directly specify model for reliability
             messages=messages_to_send,
-            temperature=st.session_state.settings["parameters"]["temperature"],
+            temperature=0.7,  # Direct temperature value for reliability
             stream=True,
             max_tokens=800,  # Limiting max tokens for faster responses
         )
@@ -201,6 +200,7 @@ def stream_response_openai(client, messages):
                 yield chunk.choices[0].delta.content
     except Exception as e:
         log.exception("")
+        yield "I'm sorry, there was an issue generating a response. Let's try again."
 
 
 def show_download():
@@ -217,33 +217,42 @@ def show_download():
 
 
 def create_transcript_document():
-    doc = Document()
-    doc.add_heading("Conversation Transcript\n", level=1)
+    try:
+        doc = Document()
+        doc.add_heading("Conversation Transcript\n", level=1)
 
-    for message in st.session_state.messages[1:]:
-        if message["role"] == "user":
-            p = doc.add_paragraph()
-            p.add_run(st.session_state.settings["user_name"] + ": ").bold = True
-            p.add_run(message["content"])
-        else:
-            p = doc.add_paragraph()
-            # Use the appropriate name based on which agent responded
-            if "agent" in message and message["agent"] == "sam":
-                agent_name = st.session_state.settings["sam"]["name"]
+        for message in st.session_state.messages[1:]:
+            if message["role"] == "user":
+                p = doc.add_paragraph()
+                p.add_run("Public Health Nurse: ").bold = True
+                p.add_run(message["content"])
             else:
-                agent_name = st.session_state.settings["noa"]["name"]
-            p.add_run(agent_name + ": ").bold = True
-            p.add_run(message["content"])
+                p = doc.add_paragraph()
+                # Use the appropriate name based on which agent responded
+                if "agent" in message and message["agent"] == "sam":
+                    agent_name = "Sam Richards"
+                else:
+                    agent_name = "Noa Martinez"
+                p.add_run(f"{agent_name}: ").bold = True
+                p.add_run(message["content"])
 
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer
+        buffer = BytesIO()
+        doc.save(buffer)
+        buffer.seek(0)
+        return buffer
+    except Exception as e:
+        log.exception(f"Error creating transcript: {e}")
+        # Return empty document if error occurs
+        empty_doc = Document()
+        empty_doc.add_paragraph("Error creating transcript")
+        buffer = BytesIO()
+        empty_doc.save(buffer)
+        buffer.seek(0)
+        return buffer
 
 
-# Session Initialization
+# Initialize session state
 def init_session():
-    # Initialize session state variables
     if "show_intro" not in st.session_state:
         st.session_state.show_intro = True
     
@@ -251,10 +260,10 @@ def init_session():
         st.session_state.chat_active = False
     
     if "sam_active" not in st.session_state:
-        st.session_state.sam_active = False  # Start with Noa for pre-briefing
+        st.session_state.sam_active = False
     
     if "debrief_active" not in st.session_state:
-        st.session_state.debrief_active = False  # Flag for debriefing phase
+        st.session_state.debrief_active = False
     
     if "processed_audio" not in st.session_state:
         st.session_state.processed_audio = None
@@ -271,36 +280,35 @@ def init_session():
     if "start_time" not in st.session_state:
         st.session_state.start_time = time.time()
     
-    # Load settings last to ensure all variables are initialized
     if "settings" not in st.session_state:
         st.session_state.settings = load_settings()
     
-    # Initialize messages with the appropriate instruction
     if "messages" not in st.session_state:
+        # Initialize with a system message using Noa's instruction
         st.session_state.messages = [
-            {"role": "system", "content": st.session_state.settings["instruction"]}
+            {"role": "system", "content": st.session_state.settings.get("instruction", "You are a helpful assistant")}
         ]
 
 
 def setup_sidebar():
-    # Determine which agent is active for the sidebar
+    # Simplified sidebar that doesn't rely on nested dictionary access
     if "sam_active" in st.session_state and st.session_state.sam_active:
-        st.sidebar.header(f"Meeting with {st.session_state.settings['sam']['name']}")
-        container1 = st.sidebar.container(border=True)
-        with container1:
-            st.image(st.session_state.settings['sam']['avatar'])
-            st.subheader(f"Name: {st.session_state.settings['sidebar']['Sam_Name']}")
-            st.subheader(f"Position: {st.session_state.settings['sidebar']['Sam_Position']}")
-            st.subheader(f"Years in Position: {st.session_state.settings['sidebar']['Sam_Years_in_Position']}")
-            st.subheader(f"Facility: {st.session_state.settings['sidebar']['Sam_Facility']}")
+        st.sidebar.header("Meeting with Sam Richards")
+        container = st.sidebar.container(border=True)
+        with container:
+            st.image("assets/Sam.jpg")
+            st.subheader("Name: Sam Richards")
+            st.subheader("Position: Operations Manager")
+            st.subheader("Years in Position: 14")
+            st.subheader("Facility: County Corrections Facility")
     else:
-        st.sidebar.header(f"Session with {st.session_state.settings['noa']['name']}")
-        container1 = st.sidebar.container(border=True)
-        with container1:
-            st.image(st.session_state.settings['noa']['avatar'])
-            st.subheader(f"Name: {st.session_state.settings['sidebar']['Noa_Name']}")
-            st.subheader(f"Position: {st.session_state.settings['sidebar']['Noa_Position']}")
-            st.subheader(f"Institution: {st.session_state.settings['sidebar']['Noa_Institution']}")
+        st.sidebar.header("Session with Noa Martinez")
+        container = st.sidebar.container(border=True)
+        with container:
+            st.image("assets/Noa.jpg")
+            st.subheader("Name: Noa Martinez")
+            st.subheader("Position: Clinical Nursing Instructor")
+            st.subheader("Institution: Columbia University School of Nursing")
 
     # Button Login
     if "password_correct" in st.session_state and st.session_state.password_correct:
@@ -312,23 +320,23 @@ def setup_sidebar():
             with st.form("Credentials"):
                 st.text_input("Access Code", type="password", key="password")
                 st.form_submit_button("Start Chat", on_click=password_entered)
-            if "password_correct" in st.session_state:
+            if "password_correct" in st.session_state and not st.session_state.password_correct:
                 st.error("😕 Invalid Code")
 
 
 def show_messages():
     for message in st.session_state.messages[1:]:
         if message["role"] == "user":
-            name = st.session_state.settings["user_name"]
-            avatar = st.session_state.settings["user_avatar"]
+            name = "Public Health Nurse"
+            avatar = "assets/User.png"
         else:
             # Determine which agent's info to use based on the message
             if "agent" in message and message["agent"] == "sam":
-                name = st.session_state.settings["sam"]["name"]
-                avatar = st.session_state.settings["sam"]["avatar"]
+                name = "Sam Richards"
+                avatar = "assets/Sam.jpg"
             else:
-                name = st.session_state.settings["noa"]["name"]
-                avatar = st.session_state.settings["noa"]["avatar"]
+                name = "Noa Martinez"
+                avatar = "assets/Noa.jpg"
                 
         with st.chat_message(name, avatar=avatar):
             st.markdown(message["content"])
@@ -345,9 +353,12 @@ def handle_audio_input(client):
             key="recorder",
         )
     # Check if there is a new audio recording and it has not been processed yet
-    if audio and audio["id"] != st.session_state.processed_audio:
-        transcript = speech_to_text(client, audio)
-        return transcript
+    if audio and "processed_audio" in st.session_state and audio["id"] != st.session_state.processed_audio:
+        try:
+            transcript = speech_to_text(client, audio)
+            return transcript
+        except:
+            return None
 
 
 def process_user_query(text_client, speech_client, user_query):
@@ -365,10 +376,7 @@ def process_user_query(text_client, speech_client, user_query):
         st.session_state.download_transcript = True
     
     # Display the user's query
-    with st.chat_message(
-        st.session_state.settings["user_name"],
-        avatar=st.session_state.settings["user_avatar"],
-    ):
+    with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
         st.markdown(user_query)
 
     # Store the user's query into the history
@@ -377,8 +385,8 @@ def process_user_query(text_client, speech_client, user_query):
     # Stream the assistant's reply
     # Determine which agent is responding
     current_agent = "sam" if st.session_state.sam_active else "noa"
-    agent_name = st.session_state.settings["sam"]["name"] if st.session_state.sam_active else st.session_state.settings["noa"]["name"]
-    agent_avatar = st.session_state.settings["sam"]["avatar"] if st.session_state.sam_active else st.session_state.settings["noa"]["avatar"]
+    agent_name = "Sam Richards" if st.session_state.sam_active else "Noa Martinez"
+    agent_avatar = "assets/Sam.jpg" if st.session_state.sam_active else "assets/Noa.jpg"
     
     with st.chat_message(agent_name, avatar=agent_avatar):
         # Empty container to display the assistant's reply
@@ -388,11 +396,7 @@ def process_user_query(text_client, speech_client, user_query):
         assistant_reply = ""
 
         # Iterate through the stream
-        for chunk in (
-            stream_response_openai(text_client, st.session_state.messages)
-            if st.session_state.settings["parameters"]["model"].startswith("gpt")
-            else stream_response_anthropic(text_client, st.session_state.messages)
-        ):
+        for chunk in stream_response_openai(text_client, st.session_state.messages):
             assistant_reply += chunk
             assistant_reply_box.markdown(assistant_reply)
 
@@ -406,77 +410,90 @@ def process_user_query(text_client, speech_client, user_query):
 
 
 def main():
-    # Initialize session state first
-    init_session()
-    
-    # Inject CSS for custom styles
-    local_css("style.css")
-
-    text_client = (
-        OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        if st.session_state.settings["parameters"]["model"].startswith("gpt")
-        else anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-    )
-    speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    st.title(st.session_state.settings["title"])
-    setup_sidebar()
-
-    # Display text before Start Chat is pressed
-    if st.session_state.show_intro:
-        with st.container(border=True):
-            st.markdown(st.session_state.settings["intro"])
-
-    # Check if chat is active
-    if st.session_state.chat_active:
-        show_messages()
-
-        # Check if there's a manual input and process it
-        if st.session_state.manual_input:
-            user_query = st.session_state.manual_input
-        else:
-            # Update placeholder text based on current agent
-            if st.session_state.sam_active:
-                placeholder_text = "Chat with Sam Richards about implementing the flu vaccination program..."
-            elif st.session_state.debrief_active:
-                placeholder_text = "Ask Noa questions about your feedback or the simulation..."
-            else:
-                placeholder_text = "Chat with Noa to prepare for your meeting with Sam..."
-                
-            user_query = st.chat_input(placeholder_text)
-            transcript = handle_audio_input(speech_client)
-            if transcript:
-                user_query = transcript
-
-        if user_query:
-            process_user_query(text_client, speech_client, user_query)
-            if st.session_state.manual_input:
-                st.session_state.manual_input = None
-                st.rerun()
-
-        # Handle end session button - only show during Sam conversation
-        if st.session_state.sam_active and not st.session_state.debrief_active:
-            if st.button("End Session & Get Feedback"):
-                st.session_state.sam_active = False
-                st.session_state.debrief_active = True
-                st.session_state.end_session_button_clicked = True
-                st.session_state.download_transcript = True
-                st.session_state["manual_input"] = "Ready for feedback on my conversation with Sam."
-                # Trigger the manual input immediately
-                st.rerun()
-
-        # Show the download button during debrief
-        if st.session_state.download_transcript:
-            show_download()
-
-    st.sidebar.warning(st.session_state.settings["warning"])
-
-
-if __name__ == "__main__":
     try:
-        main()
+        # Initialize session state first
+        init_session()
+        
+        # Inject CSS for custom styles
+        local_css("style.css")
+
+        # Create API clients with error handling
+        try:
+            text_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+            speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        except Exception as e:
+            log.exception(f"Error creating API clients: {e}")
+            st.error("Unable to connect to OpenAI API. Please check your API key.")
+            return
+
+        # Set page title from settings or use default
+        title = st.session_state.settings.get("title", "Columbia University School of Nursing Change Management Simulation")
+        st.title(title)
+        
+        # Setup sidebar (simplified version that doesn't rely on sidebar dictionary)
+        setup_sidebar()
+
+        # Display intro text before Start Chat is pressed
+        if st.session_state.show_intro:
+            with st.container(border=True):
+                st.markdown(st.session_state.settings.get("intro", "Welcome to the simulation"))
+
+        # Check if chat is active
+        if st.session_state.chat_active:
+            show_messages()
+
+            # Check if there's a manual input and process it
+            if "manual_input" in st.session_state and st.session_state.manual_input:
+                user_query = st.session_state.manual_input
+            else:
+                # Update placeholder text based on current agent
+                if "sam_active" in st.session_state and st.session_state.sam_active:
+                    placeholder_text = "Chat with Sam Richards about implementing the flu vaccination program..."
+                elif "debrief_active" in st.session_state and st.session_state.debrief_active:
+                    placeholder_text = "Ask Noa questions about your feedback or the simulation..."
+                else:
+                    placeholder_text = "Chat with Noa to prepare for your meeting with Sam..."
+                    
+                user_query = st.chat_input(placeholder_text)
+                transcript = handle_audio_input(speech_client)
+                if transcript:
+                    user_query = transcript
+
+            if user_query:
+                process_user_query(text_client, speech_client, user_query)
+                if "manual_input" in st.session_state and st.session_state.manual_input:
+                    st.session_state.manual_input = None
+                    st.rerun()
+
+            # Handle end session button - only show during Sam conversation
+            if "sam_active" in st.session_state and st.session_state.sam_active and "debrief_active" in st.session_state and not st.session_state.debrief_active:
+                if st.button("End Session & Get Feedback"):
+                    st.session_state.sam_active = False
+                    st.session_state.debrief_active = True
+                    st.session_state.end_session_button_clicked = True
+                    st.session_state.download_transcript = True
+                    st.session_state.manual_input = "Ready for feedback on my conversation with Sam."
+                    # Trigger the manual input immediately
+                    st.rerun()
+
+            # Show the download button during debrief
+            if "download_transcript" in st.session_state and st.session_state.download_transcript:
+                show_download()
+
+        # Show warning message in sidebar
+        warning_msg = st.session_state.settings.get("warning", "This is a simulation")
+        st.sidebar.warning(warning_msg)
+        
     except Exception as e:
         id = get_uuid()
         log.exception(f"Unhandled exception: {id}")
-        st.error(
-            f"{st.session_state.settings['error_message']}\n\n**Reference id: {id}**"
-        )
+        
+        # Get error message from settings or use default
+        error_msg = st.session_state.settings.get("error_message", 
+                     "😞 Oops! An unexpected error occurred. Please try again. If the error persists, please contact the administrator.")
+        
+        st.error(f"{error_msg}\n\n**Reference id: {id}**")
+
+
+if __name__ == "__main__":
+    main()
