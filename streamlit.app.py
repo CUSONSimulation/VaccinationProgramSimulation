@@ -16,6 +16,8 @@ import io
 import logging
 import uuid
 import time
+import asyncio
+import threading
 from datetime import datetime, timedelta
 
 
@@ -86,6 +88,10 @@ def password_entered():
         autoplay_audio(open("assets/unlock.mp3", "rb").read())
         log.info(f"Session Start: {get_session()}")
         
+        # Initialize the audio state
+        if "is_speaking" not in st.session_state:
+            st.session_state.is_speaking = False
+            
         # Add Noa's automatic first message to welcome the student
         if len(st.session_state.messages) <= 1:  # Only system message exists
             welcome_message = "Hi there! I'm Noa Martinez, one of the clinical instructors here at Columbia. I'll be guiding you through today's simulation. We're going to practice some change management skills in a challenging setting - implementing a flu vaccination program at a county corrections facility. You'll be meeting with Sam Richards, the Operations Manager there. He's been in his position for 14 years and, between us, he's known for being pretty resistant to change. Your goal is to persuade him to support your vaccination program despite his objections. Do you have any questions before we start, or would you like to discuss your approach?"
@@ -171,7 +177,11 @@ def speech_to_text(client, audio):
 
 
 def text_to_speech(client, text):
+    """Enhanced text-to-speech function that manages audio state"""
     try:
+        # Set speaking state to true - this lets us know audio is playing
+        st.session_state.is_speaking = True
+        
         log.debug(f"TTS: {text}")
         # Use the appropriate voice based on the current active agent
         if "sam_active" in st.session_state and st.session_state.sam_active:
@@ -185,16 +195,31 @@ def text_to_speech(client, text):
             input=text,
         )
         autoplay_audio(response.content)
+        
+        # After audio completes, set speaking state to false
+        # We'll add a slight delay to ensure audio has time to start playing
+        time.sleep(0.5)
+        st.session_state.is_speaking = False
     except Exception as e:
         log.exception("")
+        st.session_state.is_speaking = False
 
 
 def autoplay_audio(audio_data):
+    """Play audio with a unique ID to prevent conflicts"""
+    # Generate a unique ID for this audio element to prevent caching issues
+    audio_id = f"audio_{get_uuid()}"
     b64 = base64.b64encode(audio_data).decode("utf-8")
     md = f"""
-    <audio autoplay>
+    <audio id="{audio_id}" autoplay>
     <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
     </audio>
+    <script>
+    const audio = document.getElementById('{audio_id}');
+    audio.addEventListener('ended', function() {{
+        window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
+    }});
+    </script>
     """
     st.markdown(md, unsafe_allow_html=True)
 
@@ -280,6 +305,9 @@ def create_transcript_document():
 
 def switch_to_sam():
     """Critical function to ensure proper transition to Sam"""
+    # Make sure no audio is playing before transitioning
+    stop_current_audio()
+    
     # First, add Noa's introduction message (only if not already added)
     last_messages = st.session_state.messages[-3:]
     noa_intro_already_added = any("introduce you to Sam" in msg.get("content", "") 
@@ -293,6 +321,12 @@ def switch_to_sam():
             "content": transition_message,
             "agent": "noa"
         })
+        
+        # Play Noa's transition message and wait for it to finish
+        speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        text_to_speech(speech_client, transition_message)
+        # Wait a moment to ensure the audio starts playing
+        time.sleep(1.5)
     
     # Important: Set sam_active to True BEFORE adding Sam's message
     st.session_state.sam_active = True
@@ -305,8 +339,59 @@ def switch_to_sam():
         "agent": "sam"
     })
     
+    # Play Sam's introduction audio
+    speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    text_to_speech(speech_client, sam_intro)
+    
     # Force a rerun to update the UI
     st.rerun()
+
+
+def switch_to_debrief():
+    """Function to properly transition from Sam to Noa for feedback"""
+    # Make sure no audio is playing before transitioning
+    stop_current_audio()
+    
+    # Set the state flags
+    st.session_state.sam_active = False
+    st.session_state.debrief_active = True
+    st.session_state.end_session_button_clicked = True
+    st.session_state.download_transcript = True
+    
+    # Add Noa's debrief introduction message
+    debrief_intro = "So, how do you think that went? That wasn't easy - Sam can be quite challenging! Let me give you some feedback on your performance."
+    st.session_state.messages.append({
+        "role": "assistant", 
+        "content": debrief_intro,
+        "agent": "noa"
+    })
+    
+    # Play Noa's debrief introduction
+    speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    text_to_speech(speech_client, debrief_intro)
+    
+    # Force a rerun to update the UI
+    st.rerun()
+
+
+def stop_current_audio():
+    """Function to stop any currently playing audio"""
+    if "is_speaking" in st.session_state and st.session_state.is_speaking:
+        # Add JavaScript to stop all audio elements
+        st.markdown("""
+        <script>
+        var audioElements = document.querySelectorAll('audio');
+        audioElements.forEach(function(audio) {
+            audio.pause();
+            audio.currentTime = 0;
+        });
+        </script>
+        """, unsafe_allow_html=True)
+        
+        # Reset the speaking state
+        st.session_state.is_speaking = False
+        # Small delay to ensure audio stops
+        time.sleep(0.5)
 
 
 # Initialize session state
@@ -352,6 +437,9 @@ def init_session():
         
     if "transition_attempted" not in st.session_state:
         st.session_state.transition_attempted = False
+        
+    if "is_speaking" not in st.session_state:
+        st.session_state.is_speaking = False
 
 
 def setup_sidebar():
@@ -469,6 +557,9 @@ def handle_audio_input(client):
 
 
 def process_user_query(text_client, speech_client, user_query):
+    # Stop any currently playing audio when user inputs something new
+    stop_current_audio()
+    
     # Check for transition triggers
     
     # 1. Transition from Noa to Sam (pre-brief to simulation)
@@ -493,10 +584,16 @@ def process_user_query(text_client, speech_client, user_query):
     
     # 2. Transition from Sam to Noa (simulation to debrief)
     if st.session_state.sam_active and not st.session_state.debrief_active and re.search(r"ready for feedback|end session|finish|complete|goodbye", user_query.lower()):
-        st.session_state.sam_active = False
-        st.session_state.debrief_active = True
-        st.session_state.end_session_button_clicked = True
-        st.session_state.download_transcript = True
+        # Display the user's query
+        with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
+            st.markdown(user_query)
+
+        # Store the user's query into the history
+        st.session_state.messages.append({"role": "user", "content": user_query.strip()})
+        
+        # Switch to debrief mode
+        switch_to_debrief()
+        return  # Skip further processing since we're handling the transition
     
     # Display the user's query
     with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
@@ -600,6 +697,8 @@ def main():
                     user_query = transcript
 
             if user_query:
+                # Stop any currently playing audio before processing the new query
+                stop_current_audio()
                 process_user_query(text_client, speech_client, user_query)
                 if "manual_input" in st.session_state and st.session_state.manual_input:
                     st.session_state.manual_input = None
@@ -608,13 +707,9 @@ def main():
             # Handle end session button - only show during Sam conversation
             if "sam_active" in st.session_state and st.session_state.sam_active and "debrief_active" in st.session_state and not st.session_state.debrief_active:
                 if st.button("End Session & Get Feedback", type="primary", use_container_width=True):
-                    st.session_state.sam_active = False
-                    st.session_state.debrief_active = True
-                    st.session_state.end_session_button_clicked = True
-                    st.session_state.download_transcript = True
-                    st.session_state.manual_input = "Ready for feedback on my conversation with Sam."
-                    # Trigger the manual input immediately
-                    st.rerun()
+                    # Stop any currently playing audio when ending the session
+                    stop_current_audio()
+                    switch_to_debrief()
 
             # Show the download button during debrief
             if "download_transcript" in st.session_state and st.session_state.download_transcript:
