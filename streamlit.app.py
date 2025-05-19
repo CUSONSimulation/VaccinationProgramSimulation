@@ -419,6 +419,151 @@ def play_debrief_intro():
             log.exception(f"Error playing debrief intro: {e}")
 
 
+def process_user_query(text_client, speech_client, user_query):
+    # Stop any currently playing audio when user inputs something new
+    stop_current_audio()
+    
+    # Check for transition triggers
+    
+    # 1. Transition from Noa to Sam (pre-brief to simulation)
+    if not st.session_state.sam_active and not st.session_state.debrief_active:
+        # Enhanced pattern matching for readiness signals
+        ready_pattern = r"ready|begin|start|yes|yeah|sure|ok|okay|yep|let'?s|meet sam|proceed|sleep|go"
+        
+        if re.search(ready_pattern, user_query.lower()):
+            # Display the user's query first
+            with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
+                st.markdown(user_query)
+            
+            # Store the user's query into the history
+            st.session_state.messages.append({"role": "user", "content": user_query.strip()})
+            
+            # DIRECT TRANSITION - Simplified to ensure it works
+            # Add Noa's transition message
+            transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": transition_message,
+                "agent": "noa"
+            })
+            
+            # Play Noa's transition audio and wait for it to complete
+            try:
+                # Calculate approximately how long the audio will take to play
+                # A conservative estimate is about 100-125 words per minute (slower than normal speech)
+                # This translates to roughly 1.7-2 words per second
+                word_count = len(transition_message.split())
+                estimated_seconds = word_count / 1.7  # Conservative estimate
+                
+                # Add a generous buffer to ensure audio completes
+                wait_time = estimated_seconds + 2.0  # 2 second buffer after estimated completion
+                
+                # Play Noa's audio
+                text_to_speech(speech_client, transition_message)
+                
+                # Log the waiting time
+                log.info(f"Waiting {wait_time} seconds for Noa's audio to complete")
+                
+                # Wait for estimated audio duration plus buffer
+                time.sleep(wait_time)
+                
+                # Make sure any audio has completely stopped
+                stop_current_audio()
+                time.sleep(1.0)  # Additional pause after stopping audio
+                
+                log.info("Noa's transition message complete, now switching to Sam")
+                
+            except Exception as e:
+                log.exception(f"Error playing transition audio: {e}")
+            
+            # Set sam_active to True
+            st.session_state.sam_active = True
+            
+            # Add Sam's first message
+            sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": sam_intro,
+                "agent": "sam"
+            })
+            
+            # Force a rerun to update the UI and play Sam's audio on the next cycle
+            st.session_state.sam_intro_needs_playing = True
+            st.rerun()
+            return  # Skip further processing since we're handling the transition
+    
+    # 2. Transition from Sam to Noa (simulation to debrief)
+    if st.session_state.sam_active and not st.session_state.debrief_active and re.search(r"ready for feedback|end session|finish|complete|goodbye", user_query.lower()):
+        # Display the user's query
+        with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
+            st.markdown(user_query)
+
+        # Store the user's query into the history
+        st.session_state.messages.append({"role": "user", "content": user_query.strip()})
+        
+        # DIRECT TRANSITION to debrief mode
+        # Make sure no audio is playing
+        stop_current_audio()
+        
+        # Set state flags
+        st.session_state.sam_active = False
+        st.session_state.debrief_active = True
+        st.session_state.end_session_button_clicked = True
+        st.session_state.download_transcript = True
+        
+        # Add Noa's debrief introduction message
+        debrief_intro = "So, how do you think that went? That wasn't easy - Sam can be quite challenging! I was really impressed with how you managed to stay calm and professional throughout the conversation, especially when he brought up some tough concerns. Let me give you some feedback on your performance."
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": debrief_intro,
+            "agent": "noa"
+        })
+        
+        # Set flag to play debrief audio on next cycle
+        st.session_state.debrief_intro_needs_playing = True
+        
+        # Force a rerun to update the UI
+        st.rerun()
+        return
+    
+    # Display the user's query
+    with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
+        st.markdown(user_query)
+
+    # Store the user's query into the history
+    st.session_state.messages.append({"role": "user", "content": user_query.strip()})
+
+    # Stream the assistant's reply
+    # Determine which agent is responding
+    current_agent = "sam" if st.session_state.sam_active else "noa"
+    agent_name = "Sam Richards" if st.session_state.sam_active else "Noa Martinez"
+    agent_avatar = "assets/Sam.jpg" if st.session_state.sam_active else "assets/Noa.jpg"
+    
+    with st.chat_message(agent_name, avatar=agent_avatar):
+        # Empty container to display the assistant's reply
+        assistant_reply_box = st.empty()
+
+        # A blank string to store the assistant's reply
+        assistant_reply = ""
+
+        # Iterate through the stream
+        for chunk in stream_response_openai(text_client, st.session_state.messages):
+            assistant_reply += chunk
+            assistant_reply_box.markdown(assistant_reply)
+
+        # Once the stream is over, update chat history with agent info
+        st.session_state.messages.append(
+            {"role": "assistant", "content": assistant_reply.strip(), "agent": current_agent}
+        )
+        
+        # Play audio response AFTER the full text is shown
+        text_to_speech(speech_client, assistant_reply)
+        
+        # Update ready_for_sam flag after Noa responds
+        if not st.session_state.sam_active and not st.session_state.debrief_active:
+            st.session_state.ready_for_sam = check_readiness_for_sam()
+
+
 # Initialize session state
 def init_session():
     if "show_intro" not in st.session_state:
@@ -573,129 +718,6 @@ def handle_audio_input(client):
             return transcript
         except:
             return None
-
-
-def process_user_query(text_client, speech_client, user_query):
-    # Stop any currently playing audio when user inputs something new
-    stop_current_audio()
-    
-    # Check for transition triggers
-    
-    # 1. Transition from Noa to Sam (pre-brief to simulation)
-    if not st.session_state.sam_active and not st.session_state.debrief_active:
-        # Enhanced pattern matching for readiness signals
-        ready_pattern = r"ready|begin|start|yes|yeah|sure|ok|okay|yep|let'?s|meet sam|proceed"
-        
-        if re.search(ready_pattern, user_query.lower()):
-            # Display the user's query first
-            with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
-                st.markdown(user_query)
-            
-            # Store the user's query into the history
-            st.session_state.messages.append({"role": "user", "content": user_query.strip()})
-            
-            # DIRECT TRANSITION - Simplified to ensure it works
-            # Add Noa's transition message
-            transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": transition_message,
-                "agent": "noa"
-            })
-            
-            # Play Noa's transition audio
-            try:
-                text_to_speech(speech_client, transition_message)
-                time.sleep(1.0)  # Short pause after audio
-            except Exception as e:
-                log.exception(f"Error playing transition audio: {e}")
-            
-            # Set sam_active to True
-            st.session_state.sam_active = True
-            
-            # Add Sam's first message
-            sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": sam_intro,
-                "agent": "sam"
-            })
-            
-            # Force a rerun to update the UI and play Sam's audio on the next cycle
-            st.session_state.sam_intro_needs_playing = True
-            st.rerun()
-            return  # Skip further processing since we're handling the transition
-    
-    # 2. Transition from Sam to Noa (simulation to debrief)
-    if st.session_state.sam_active and not st.session_state.debrief_active and re.search(r"ready for feedback|end session|finish|complete|goodbye", user_query.lower()):
-        # Display the user's query
-        with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
-            st.markdown(user_query)
-
-        # Store the user's query into the history
-        st.session_state.messages.append({"role": "user", "content": user_query.strip()})
-        
-        # DIRECT TRANSITION to debrief mode
-        # Make sure no audio is playing
-        stop_current_audio()
-        
-        # Set state flags
-        st.session_state.sam_active = False
-        st.session_state.debrief_active = True
-        st.session_state.end_session_button_clicked = True
-        st.session_state.download_transcript = True
-        
-        # Add Noa's debrief introduction message
-        debrief_intro = "So, how do you think that went? That wasn't easy - Sam can be quite challenging! I was really impressed with how you managed to stay calm and professional throughout the conversation, especially when he brought up some tough concerns. Let me give you some feedback on your performance."
-        st.session_state.messages.append({
-            "role": "assistant", 
-            "content": debrief_intro,
-            "agent": "noa"
-        })
-        
-        # Set flag to play debrief audio on next cycle
-        st.session_state.debrief_intro_needs_playing = True
-        
-        # Force a rerun to update the UI
-        st.rerun()
-        return
-    
-    # Display the user's query
-    with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
-        st.markdown(user_query)
-
-    # Store the user's query into the history
-    st.session_state.messages.append({"role": "user", "content": user_query.strip()})
-
-    # Stream the assistant's reply
-    # Determine which agent is responding
-    current_agent = "sam" if st.session_state.sam_active else "noa"
-    agent_name = "Sam Richards" if st.session_state.sam_active else "Noa Martinez"
-    agent_avatar = "assets/Sam.jpg" if st.session_state.sam_active else "assets/Noa.jpg"
-    
-    with st.chat_message(agent_name, avatar=agent_avatar):
-        # Empty container to display the assistant's reply
-        assistant_reply_box = st.empty()
-
-        # A blank string to store the assistant's reply
-        assistant_reply = ""
-
-        # Iterate through the stream
-        for chunk in stream_response_openai(text_client, st.session_state.messages):
-            assistant_reply += chunk
-            assistant_reply_box.markdown(assistant_reply)
-
-        # Once the stream is over, update chat history with agent info
-        st.session_state.messages.append(
-            {"role": "assistant", "content": assistant_reply.strip(), "agent": current_agent}
-        )
-        
-        # Play audio response AFTER the full text is shown
-        text_to_speech(speech_client, assistant_reply)
-        
-        # Update ready_for_sam flag after Noa responds
-        if not st.session_state.sam_active and not st.session_state.debrief_active:
-            st.session_state.ready_for_sam = check_readiness_for_sam()
 
 
 def main():
