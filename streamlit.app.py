@@ -438,53 +438,59 @@ def process_user_query(text_client, speech_client, user_query):
             # Store the user's query into the history
             st.session_state.messages.append({"role": "user", "content": user_query.strip()})
             
-            # Add a state flag to track where we are in the transition process
-            if "transition_step" not in st.session_state:
-                st.session_state.transition_step = "noa_message"
+            # DIRECT TRANSITION - Simplified to ensure it works
+            # Add Noa's transition message
+            transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": transition_message,
+                "agent": "noa"
+            })
+            
+            # Play Noa's transition audio and wait for it to complete
+            try:
+                # Calculate approximately how long the audio will take to play
+                # A conservative estimate is about 100-125 words per minute (slower than normal speech)
+                # This translates to roughly 1.7-2 words per second
+                word_count = len(transition_message.split())
+                estimated_seconds = word_count / 1.7  # Conservative estimate
                 
-                # Add only Noa's transition message first
-                transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": transition_message,
-                    "agent": "noa"
-                })
+                # Add a generous buffer to ensure audio completes
+                wait_time = estimated_seconds + 2.0  # 2 second buffer after estimated completion
                 
-                # Display Noa's message and play the audio
-                with st.chat_message("Noa Martinez", avatar="assets/Noa.jpg"):
-                    st.markdown(transition_message)
-                    
-                # Play Noa's transition audio
+                # Play Noa's audio
                 text_to_speech(speech_client, transition_message)
                 
-                # Force a rerun to ensure UI updates and audio completes
-                st.rerun()
-                return  # Stop further processing
+                # Log the waiting time
+                log.info(f"Waiting {wait_time} seconds for Noa's audio to complete")
                 
-            elif st.session_state.transition_step == "noa_message":
-                # Now we've shown Noa's message, proceed to Sam
-                # Make sure any audio has stopped
+                # Wait for estimated audio duration plus buffer
+                time.sleep(wait_time)
+                
+                # Make sure any audio has completely stopped
                 stop_current_audio()
-                time.sleep(0.5)  # Small pause
+                time.sleep(1.0)  # Additional pause after stopping audio
                 
-                # Update transition step
-                st.session_state.transition_step = "done"
+                log.info("Noa's transition message complete, now switching to Sam")
                 
-                # Set sam_active to True
-                st.session_state.sam_active = True
-                
-                # Add Sam's first message
-                sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": sam_intro,
-                    "agent": "sam"
-                })
-                
-                # Flag to play Sam's audio on next cycle
-                st.session_state.sam_intro_needs_playing = True
-                st.rerun()
-                return  # Skip further processing
+            except Exception as e:
+                log.exception(f"Error playing transition audio: {e}")
+            
+            # Set sam_active to True
+            st.session_state.sam_active = True
+            
+            # Add Sam's first message
+            sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": sam_intro,
+                "agent": "sam"
+            })
+            
+            # Force a rerun to update the UI and play Sam's audio on the next cycle
+            st.session_state.sam_intro_needs_playing = True
+            st.rerun()
+            return  # Skip further processing since we're handling the transition
     
     # 2. Transition from Sam to Noa (simulation to debrief)
     if st.session_state.sam_active and not st.session_state.debrief_active and re.search(r"ready for feedback|end session|finish|complete|goodbye", user_query.lower()):
@@ -604,9 +610,6 @@ def init_session():
         
     if "is_speaking" not in st.session_state:
         st.session_state.is_speaking = False
-        
-    if "transition_step" not in st.session_state:
-        st.session_state.transition_step = None
 
 
 def setup_sidebar():
