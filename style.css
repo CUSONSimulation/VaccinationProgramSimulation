@@ -16,21 +16,91 @@ body {
     background-color: #0e4c92;
     color: white;
     font-weight: bold;
+    padding: 0.6rem 1.2rem;
+    font-size: 1rem;
+    transition: all 0.2s ease;
+}
+
+.stButton button:hover {
+    background-color: #0b3a73;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
 }
 
 /* Chat container styling */
 [data-testid="stChatMessageContent"] {
     border-radius: 15px;
-    padding: 10px;
+    padding: 12px 15px;
+    margin-bottom: 8px;
+    max-width: 90%;
+}
+
+/* User message styling */
+[data-testid="stChatMessage"] [data-testid="stChatMessageContent"]:has(p:first-child:not(:last-child)) {
+    background-color: #e6f2ff;
+    border-left: 4px solid #0e4c92;
+}
+
+/* Sam Richards message styling */
+[data-testid="stChatMessage"]:has(img[src*="Sam.jpg"]) [data-testid="stChatMessageContent"] {
+    background-color: #f5f5f5;
+    border-left: 4px solid #555;
+}
+
+/* Noa message styling */
+[data-testid="stChatMessage"]:has(img[src*="Noa.jpg"]) [data-testid="stChatMessageContent"] {
+    background-color: #f0f7ff;
+    border-left: 4px solid #2e86de;
 }
 
 /* Custom warning message styling */
 .stAlert {
     border-radius: 8px;
+    border-left: 5px solid #ff9800;
 }
 
 /* Make end session button more prominent */
-button[kind="secondary"] {
+button:contains("End Session") {
     background-color: #d32f2f !important;
     color: white !important;
+    padding: 0.7rem 1.5rem !important;
+    font-size: 1.1rem !important;
+    border-radius: 30px !important;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2) !important;
+    margin-top: 20px !important;
+    margin-bottom: 20px !important;
+    transition: all 0.3s ease !important;
+}
+
+button:contains("End Session"):hover {
+    background-color: #b71c1c !important;
+    transform: translateY(-3px) !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important;
+}
+
+/* Style chat input for better visibility */
+[data-testid="stChatInput"] {
+    border: 2px solid #ddd;
+    border-radius: 30px;
+    padding: 5px;
+    transition: all 0.3s ease;
+}
+
+[data-testid="stChatInput"]:focus-within {
+    border-color: #0e4c92;
+    box-shadow: 0 0 0 2px rgba(14, 76, 146, 0.2);
+}
+
+/* Improve the download button styling */
+[data-testid="baseButton-secondary"] {
+    background-color: #4caf50 !important;
+    color: white !important;
+    border-radius: 20px !important;
+    padding: 0.5rem 1rem !important;
+    transition: all 0.2s ease !important;
+}
+
+[data-testid="baseButton-secondary"]:hover {
+    background-color: #388e3c !important;
+    transform: translateY(-2px) !important;
 }
