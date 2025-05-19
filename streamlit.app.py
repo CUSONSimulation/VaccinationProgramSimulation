@@ -119,7 +119,10 @@ def text_to_speech(client, text):
     try:
         log.debug(f"TTS: {text}")
         # Use the appropriate voice based on the current active agent
-        current_voice = st.session_state.settings["sam"]["voice"] if st.session_state.sam_active else st.session_state.settings["noa"]["voice"]
+        if "sam_active" in st.session_state and st.session_state.sam_active:
+            current_voice = st.session_state.settings["sam"]["voice"]
+        else:
+            current_voice = st.session_state.settings["noa"]["voice"]
         
         response = client.audio.speech.create(
             model="tts-1",
@@ -147,7 +150,10 @@ def stream_response_anthropic(client, messages):
         log.debug(f"Sending text request to Anthropic: {messages[-1]['content']}")
         
         # Use the appropriate instruction based on which agent is active
-        system_content = st.session_state.settings["sam_instruction"] if st.session_state.sam_active else st.session_state.settings["noa_instruction"]
+        if "sam_active" in st.session_state and st.session_state.sam_active:
+            system_content = st.session_state.settings["sam_instruction"]
+        else:
+            system_content = st.session_state.settings["noa_instruction"]
         
         stream = client.messages.create(
             model=st.session_state.settings["parameters"]["model"],
@@ -173,7 +179,7 @@ def stream_response_openai(client, messages):
         log.debug(f"Sending text request to OpenAI: {messages[-1]['content']}")
         
         # Get the correct system message based on which agent is active
-        if st.session_state.sam_active:
+        if "sam_active" in st.session_state and st.session_state.sam_active:
             # If Sam is active, use Sam's instruction
             messages_to_send = [{"role": "system", "content": st.session_state.settings["sam_instruction"]}] + messages[1:]
         else:
@@ -222,7 +228,10 @@ def create_transcript_document():
         else:
             p = doc.add_paragraph()
             # Use the appropriate name based on which agent responded
-            agent_name = st.session_state.settings["sam"]["name"] if message.get("agent") == "sam" else st.session_state.settings["noa"]["name"]
+            if "agent" in message and message["agent"] == "sam":
+                agent_name = st.session_state.settings["sam"]["name"]
+            else:
+                agent_name = st.session_state.settings["noa"]["name"]
             p.add_run(agent_name + ": ").bold = True
             p.add_run(message["content"])
 
@@ -234,30 +243,48 @@ def create_transcript_document():
 
 # Session Initialization
 def init_session():
+    # Initialize session state variables
+    if "show_intro" not in st.session_state:
+        st.session_state.show_intro = True
+    
+    if "chat_active" not in st.session_state:
+        st.session_state.chat_active = False
+    
+    if "sam_active" not in st.session_state:
+        st.session_state.sam_active = False  # Start with Noa for pre-briefing
+    
+    if "debrief_active" not in st.session_state:
+        st.session_state.debrief_active = False  # Flag for debriefing phase
+    
+    if "processed_audio" not in st.session_state:
+        st.session_state.processed_audio = None
+    
+    if "manual_input" not in st.session_state:
+        st.session_state.manual_input = None
+    
+    if "end_session_button_clicked" not in st.session_state:
+        st.session_state.end_session_button_clicked = False
+    
+    if "download_transcript" not in st.session_state:
+        st.session_state.download_transcript = False
+    
+    if "start_time" not in st.session_state:
+        st.session_state.start_time = time.time()
+    
+    # Load settings last to ensure all variables are initialized
     if "settings" not in st.session_state:
         st.session_state.settings = load_settings()
-        defaults = {
-            "show_intro": True,
-            "chat_active": False,
-            "messages": [
-                {"role": "system", "content": st.session_state.settings["noa_instruction"]}
-            ],
-            "processed_audio": None,
-            "manual_input": None,
-            "end_session_button_clicked": False,
-            "download_transcript": False,
-            "start_time": time.time(),
-            "sam_active": False,  # Start with Noa for pre-briefing
-            "debrief_active": False,  # Flag for debriefing phase
-        }
-        for key, val in defaults.items():
-            if key not in st.session_state:
-                st.session_state[key] = val
+    
+    # Initialize messages with the appropriate instruction
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {"role": "system", "content": st.session_state.settings["instruction"]}
+        ]
 
 
 def setup_sidebar():
     # Determine which agent is active for the sidebar
-    if st.session_state.sam_active:
+    if "sam_active" in st.session_state and st.session_state.sam_active:
         st.sidebar.header(f"Meeting with {st.session_state.settings['sam']['name']}")
         container1 = st.sidebar.container(border=True)
         with container1:
@@ -296,7 +323,7 @@ def show_messages():
             avatar = st.session_state.settings["user_avatar"]
         else:
             # Determine which agent's info to use based on the message
-            if message.get("agent") == "sam":
+            if "agent" in message and message["agent"] == "sam":
                 name = st.session_state.settings["sam"]["name"]
                 avatar = st.session_state.settings["sam"]["avatar"]
             else:
@@ -379,10 +406,12 @@ def process_user_query(text_client, speech_client, user_query):
 
 
 def main():
+    # Initialize session state first
+    init_session()
+    
     # Inject CSS for custom styles
     local_css("style.css")
 
-    init_session()
     text_client = (
         OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
         if st.session_state.settings["parameters"]["model"].startswith("gpt")
