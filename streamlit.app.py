@@ -119,7 +119,7 @@ def text_to_speech(client, text):
     try:
         log.debug(f"TTS: {text}")
         # Use the appropriate voice based on the current active agent
-        current_voice = st.session_state.settings["sam"]["voice"] if not st.session_state.noa_active else st.session_state.settings["noa"]["voice"]
+        current_voice = st.session_state.settings["sam"]["voice"] if st.session_state.sam_active else st.session_state.settings["noa"]["voice"]
         
         response = client.audio.speech.create(
             model="tts-1",
@@ -147,7 +147,7 @@ def stream_response_anthropic(client, messages):
         log.debug(f"Sending text request to Anthropic: {messages[-1]['content']}")
         
         # Use the appropriate instruction based on which agent is active
-        system_content = st.session_state.settings["noa_instruction"] if st.session_state.noa_active else st.session_state.settings["instruction"]
+        system_content = st.session_state.settings["sam_instruction"] if st.session_state.sam_active else st.session_state.settings["noa_instruction"]
         
         stream = client.messages.create(
             model=st.session_state.settings["parameters"]["model"],
@@ -173,18 +173,22 @@ def stream_response_openai(client, messages):
         log.debug(f"Sending text request to OpenAI: {messages[-1]['content']}")
         
         # Get the correct system message based on which agent is active
-        if st.session_state.noa_active:
-            # If Noa is active, replace the system message with Noa's instruction
-            messages_to_send = [{"role": "system", "content": st.session_state.settings["noa_instruction"]}] + messages[1:]
+        if st.session_state.sam_active:
+            # If Sam is active, use Sam's instruction
+            messages_to_send = [{"role": "system", "content": st.session_state.settings["sam_instruction"]}] + messages[1:]
         else:
-            # Otherwise use the original messages
-            messages_to_send = messages
+            # Otherwise use Noa's instruction
+            messages_to_send = [{"role": "system", "content": st.session_state.settings["noa_instruction"]}] + messages[1:]
         
+        # Optimize for faster responses by setting max_tokens appropriately
+        # This helps avoid unnecessary computation for very long responses
+        # Adjust the max_tokens value based on your needs
         stream = client.chat.completions.create(
             model=st.session_state.settings["parameters"]["model"],
             messages=messages_to_send,
             temperature=st.session_state.settings["parameters"]["temperature"],
             stream=True,
+            max_tokens=800,  # Limiting max tokens for faster responses
         )
         for chunk in stream:
             if chunk.choices[0].delta.content is not None:
@@ -218,7 +222,7 @@ def create_transcript_document():
         else:
             p = doc.add_paragraph()
             # Use the appropriate name based on which agent responded
-            agent_name = "Noa Martinez" if message.get("agent") == "noa" else "Sam Richards"
+            agent_name = st.session_state.settings["sam"]["name"] if message.get("agent") == "sam" else st.session_state.settings["noa"]["name"]
             p.add_run(agent_name + ": ").bold = True
             p.add_run(message["content"])
 
@@ -236,14 +240,15 @@ def init_session():
             "show_intro": True,
             "chat_active": False,
             "messages": [
-                {"role": "system", "content": st.session_state.settings["instruction"]}
+                {"role": "system", "content": st.session_state.settings["noa_instruction"]}
             ],
             "processed_audio": None,
             "manual_input": None,
             "end_session_button_clicked": False,
             "download_transcript": False,
             "start_time": time.time(),
-            "noa_active": False,  # Flag to track which agent is active
+            "sam_active": False,  # Start with Noa for pre-briefing
+            "debrief_active": False,  # Flag for debriefing phase
         }
         for key, val in defaults.items():
             if key not in st.session_state:
@@ -252,24 +257,23 @@ def init_session():
 
 def setup_sidebar():
     # Determine which agent is active for the sidebar
-    if st.session_state.noa_active:
-        agent_name = st.session_state.settings["noa"]["name"]
-        st.sidebar.header(f"Chat with {agent_name}")
+    if st.session_state.sam_active:
+        st.sidebar.header(f"Meeting with {st.session_state.settings['sam']['name']}")
         container1 = st.sidebar.container(border=True)
         with container1:
-            st.image(st.session_state.settings["noa"]["avatar"])
-            st.subheader(f"Name: {agent_name}")
-            st.subheader("Position: Clinical Nursing Instructor")
-            st.subheader("Institution: Columbia University School of Nursing")
+            st.image(st.session_state.settings['sam']['avatar'])
+            st.subheader(f"Name: {st.session_state.settings['sidebar']['Sam_Name']}")
+            st.subheader(f"Position: {st.session_state.settings['sidebar']['Sam_Position']}")
+            st.subheader(f"Years in Position: {st.session_state.settings['sidebar']['Sam_Years_in_Position']}")
+            st.subheader(f"Facility: {st.session_state.settings['sidebar']['Sam_Facility']}")
     else:
-        st.sidebar.header("Chat with " + st.session_state.settings["assistant_name"])
+        st.sidebar.header(f"Session with {st.session_state.settings['noa']['name']}")
         container1 = st.sidebar.container(border=True)
         with container1:
-            for key, val in st.session_state.settings["sidebar"].items():
-                if re.search(r"(jpg|png|webp)$", val):
-                    st.image(val)
-                else:
-                    st.subheader(f"{key.replace('_', ' ')}: {val}")
+            st.image(st.session_state.settings['noa']['avatar'])
+            st.subheader(f"Name: {st.session_state.settings['sidebar']['Noa_Name']}")
+            st.subheader(f"Position: {st.session_state.settings['sidebar']['Noa_Position']}")
+            st.subheader(f"Institution: {st.session_state.settings['sidebar']['Noa_Institution']}")
 
     # Button Login
     if "password_correct" in st.session_state and st.session_state.password_correct:
@@ -292,12 +296,12 @@ def show_messages():
             avatar = st.session_state.settings["user_avatar"]
         else:
             # Determine which agent's info to use based on the message
-            if message.get("agent") == "noa":
-                name = st.session_state.settings["noa"]["name"]
-                avatar = st.session_state.settings["noa"]["avatar"]
-            else:
+            if message.get("agent") == "sam":
                 name = st.session_state.settings["sam"]["name"]
                 avatar = st.session_state.settings["sam"]["avatar"]
+            else:
+                name = st.session_state.settings["noa"]["name"]
+                avatar = st.session_state.settings["noa"]["avatar"]
                 
         with st.chat_message(name, avatar=avatar):
             st.markdown(message["content"])
@@ -320,10 +324,18 @@ def handle_audio_input(client):
 
 
 def process_user_query(text_client, speech_client, user_query):
-    # Check if this is the trigger to switch to Noa
-    if user_query.strip() == "Goodbye. Thank you for coming." and not st.session_state.noa_active:
-        # Set the flag to activate Noa for future messages
-        st.session_state.noa_active = True
+    # Check for transition triggers
+    
+    # 1. Transition from Noa to Sam (pre-brief to simulation)
+    if not st.session_state.sam_active and not st.session_state.debrief_active and re.search(r"meet with sam|talk to sam|ready to meet|start simulation|begin simulation", user_query.lower()):
+        st.session_state.sam_active = True
+    
+    # 2. Transition from Sam to Noa (simulation to debrief)
+    if st.session_state.sam_active and not st.session_state.debrief_active and re.search(r"ready for feedback|end session|finish|complete|goodbye", user_query.lower()):
+        st.session_state.sam_active = False
+        st.session_state.debrief_active = True
+        st.session_state.end_session_button_clicked = True
+        st.session_state.download_transcript = True
     
     # Display the user's query
     with st.chat_message(
@@ -337,9 +349,9 @@ def process_user_query(text_client, speech_client, user_query):
 
     # Stream the assistant's reply
     # Determine which agent is responding
-    current_agent = "noa" if st.session_state.noa_active else "sam"
-    agent_name = st.session_state.settings["noa"]["name"] if st.session_state.noa_active else st.session_state.settings["sam"]["name"]
-    agent_avatar = st.session_state.settings["noa"]["avatar"] if st.session_state.noa_active else st.session_state.settings["sam"]["avatar"]
+    current_agent = "sam" if st.session_state.sam_active else "noa"
+    agent_name = st.session_state.settings["sam"]["name"] if st.session_state.sam_active else st.session_state.settings["noa"]["name"]
+    agent_avatar = st.session_state.settings["sam"]["avatar"] if st.session_state.sam_active else st.session_state.settings["noa"]["avatar"]
     
     with st.chat_message(agent_name, avatar=agent_avatar):
         # Empty container to display the assistant's reply
@@ -361,8 +373,9 @@ def process_user_query(text_client, speech_client, user_query):
         st.session_state.messages.append(
             {"role": "assistant", "content": assistant_reply.strip(), "agent": current_agent}
         )
-        if not st.session_state.end_session_button_clicked or current_agent == "noa":
-            text_to_speech(speech_client, assistant_reply)
+        
+        # Play audio response
+        text_to_speech(speech_client, assistant_reply)
 
 
 def main():
@@ -392,15 +405,18 @@ def main():
         if st.session_state.manual_input:
             user_query = st.session_state.manual_input
         else:
-            if st.session_state.end_session_button_clicked:
-                user_query = st.chat_input("Questions about your feedback? Ask them here.")
+            # Update placeholder text based on current agent
+            if st.session_state.sam_active:
+                placeholder_text = "Chat with Sam Richards about implementing the flu vaccination program..."
+            elif st.session_state.debrief_active:
+                placeholder_text = "Ask Noa questions about your feedback or the simulation..."
             else:
-                user_query = st.chat_input(
-                    "Click 'End Session' Button to Receive Feedback and Download Transcript."
-                )
-                transcript = handle_audio_input(speech_client)
-                if transcript:
-                    user_query = transcript
+                placeholder_text = "Chat with Noa to prepare for your meeting with Sam..."
+                
+            user_query = st.chat_input(placeholder_text)
+            transcript = handle_audio_input(speech_client)
+            if transcript:
+                user_query = transcript
 
         if user_query:
             process_user_query(text_client, speech_client, user_query)
@@ -408,22 +424,18 @@ def main():
                 st.session_state.manual_input = None
                 st.rerun()
 
-        # Handle end session
-        if (
-            not st.session_state.end_session_button_clicked
-            and len(st.session_state.messages) > 1
-        ):
-            if st.button("End Session"):
+        # Handle end session button - only show during Sam conversation
+        if st.session_state.sam_active and not st.session_state.debrief_active:
+            if st.button("End Session & Get Feedback"):
+                st.session_state.sam_active = False
+                st.session_state.debrief_active = True
                 st.session_state.end_session_button_clicked = True
-                log.info(
-                    f"Session end: {elapsed(st.session_state.start_time)} {get_session()}"
-                )
                 st.session_state.download_transcript = True
-                st.session_state["manual_input"] = "Goodbye. Thank you for coming."
+                st.session_state["manual_input"] = "Ready for feedback on my conversation with Sam."
                 # Trigger the manual input immediately
                 st.rerun()
 
-        # Show the download button
+        # Show the download button during debrief
         if st.session_state.download_transcript:
             show_download()
 
