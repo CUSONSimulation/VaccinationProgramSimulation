@@ -16,7 +16,6 @@ import io
 import logging
 import uuid
 import time
-import asyncio
 import threading
 from datetime import datetime, timedelta
 
@@ -91,8 +90,17 @@ def password_entered():
         # Initialize the audio state
         if "is_speaking" not in st.session_state:
             st.session_state.is_speaking = False
+        
+        # Initialize the last_audio_time to track when audio finishes
+        if "last_audio_time" not in st.session_state:
+            st.session_state.last_audio_time = time.time()
+        
+        # Initialize transition_lock to prevent simultaneous transitions
+        if "transition_lock" not in st.session_state:
+            st.session_state.transition_lock = False
             
         # Add Noa's automatic first message to welcome the student
+        # First add the message to the UI
         if len(st.session_state.messages) <= 1:  # Only system message exists
             welcome_message = "Hi there! I'm Noa Martinez, one of the clinical instructors here at Columbia. I'll be guiding you through today's simulation. We're going to practice some change management skills in a challenging setting - implementing a flu vaccination program at a county corrections facility. You'll be meeting with Sam Richards, the Operations Manager there. He's been in his position for 14 years and, between us, he's known for being pretty resistant to change. Your goal is to persuade him to support your vaccination program despite his objections. Do you have any questions before we start, or would you like to discuss your approach?"
             st.session_state.messages.append({
@@ -100,11 +108,6 @@ def password_entered():
                 "content": welcome_message,
                 "agent": "noa"
             })
-            # Also play the welcome audio
-            try:
-                text_to_speech(OpenAI(api_key=st.secrets["OPENAI_API_KEY"]), welcome_message)
-            except Exception as e:
-                log.exception(f"Error playing welcome audio: {e}")
     else:
         st.session_state["password_correct"] = False
 
@@ -176,9 +179,13 @@ def speech_to_text(client, audio):
         log.exception("")
 
 
-def text_to_speech(client, text):
-    """Enhanced text-to-speech function that manages audio state"""
+def text_to_speech(client, text, play_immediately=True, delay_before=0, delay_after=0):
+    """Enhanced text-to-speech function with timing control"""
     try:
+        # Add optional delay before speaking (for sequencing)
+        if delay_before > 0:
+            time.sleep(delay_before)
+            
         # Set speaking state to true - this lets us know audio is playing
         st.session_state.is_speaking = True
         
@@ -194,34 +201,87 @@ def text_to_speech(client, text):
             voice=current_voice,
             input=text,
         )
-        autoplay_audio(response.content)
         
-        # After audio completes, set speaking state to false
-        # We'll add a slight delay to ensure audio has time to start playing
-        time.sleep(0.5)
-        st.session_state.is_speaking = False
+        # Play the audio if requested
+        if play_immediately:
+            autoplay_audio(response.content)
+            
+            # Update the last audio time
+            st.session_state.last_audio_time = time.time()
+            
+            # Wait a bit for audio to finish (estimate based on text length)
+            # This helps with synchronization
+            estimated_duration = len(text) * 0.05  # ~50ms per character
+            time.sleep(min(estimated_duration, 1.0))  # Cap at 1 second for responsiveness
+            
+            # Add optional delay after speaking (for sequencing)
+            if delay_after > 0:
+                time.sleep(delay_after)
+            
+        # Return the audio content for later use
+        return response.content
+        
     except Exception as e:
-        log.exception("")
+        log.exception(f"Error in text_to_speech: {e}")
         st.session_state.is_speaking = False
+        return None
+    finally:
+        # After audio completes or fails, set speaking state to false
+        st.session_state.is_speaking = False
+
+
+def play_welcome_audio():
+    """Function to play the welcome message audio after UI has loaded"""
+    if "welcome_audio_played" not in st.session_state or not st.session_state.welcome_audio_played:
+        try:
+            # Get the welcome message
+            welcome_message = st.session_state.messages[1]["content"]
+            
+            # Play the audio
+            speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+            text_to_speech(speech_client, welcome_message)
+            
+            # Mark as played
+            st.session_state.welcome_audio_played = True
+        except Exception as e:
+            log.exception(f"Error playing welcome audio: {e}")
 
 
 def autoplay_audio(audio_data):
     """Play audio with a unique ID to prevent conflicts"""
-    # Generate a unique ID for this audio element to prevent caching issues
-    audio_id = f"audio_{get_uuid()}"
-    b64 = base64.b64encode(audio_data).decode("utf-8")
-    md = f"""
-    <audio id="{audio_id}" autoplay>
-    <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-    </audio>
-    <script>
-    const audio = document.getElementById('{audio_id}');
-    audio.addEventListener('ended', function() {{
-        window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
-    }});
-    </script>
-    """
-    st.markdown(md, unsafe_allow_html=True)
+    try:
+        # Generate a unique ID for this audio element to prevent caching issues
+        audio_id = f"audio_{get_uuid()}"
+        b64 = base64.b64encode(audio_data).decode("utf-8")
+        md = f"""
+        <audio id="{audio_id}" autoplay>
+        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        </audio>
+        <script>
+        const audio = document.getElementById('{audio_id}');
+        
+        // Function to report audio status
+        function reportAudioStatus() {{
+            if (audio && audio.ended) {{
+                window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
+            }}
+        }}
+        
+        // Set up event listeners
+        if (audio) {{
+            audio.addEventListener('ended', reportAudioStatus);
+            audio.addEventListener('error', reportAudioStatus);
+            
+            // Set a backup timeout in case the ended event doesn't fire
+            setTimeout(reportAudioStatus, {len(audio_data) * 10});
+        }}
+        </script>
+        """
+        st.markdown(md, unsafe_allow_html=True)
+        return True
+    except Exception as e:
+        log.exception(f"Error in autoplay_audio: {e}")
+        return False
 
 
 # Send prompt to OpenAI and get response
@@ -303,77 +363,6 @@ def create_transcript_document():
         return buffer
 
 
-def switch_to_sam():
-    """Critical function to ensure proper transition to Sam"""
-    # Make sure no audio is playing before transitioning
-    stop_current_audio()
-    
-    # First, add Noa's introduction message (only if not already added)
-    last_messages = st.session_state.messages[-3:]
-    noa_intro_already_added = any("introduce you to Sam" in msg.get("content", "") 
-                               for msg in last_messages 
-                               if msg.get("role") == "assistant" and msg.get("agent") != "sam")
-    
-    if not noa_intro_already_added:
-        transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
-        st.session_state.messages.append({
-            "role": "assistant", 
-            "content": transition_message,
-            "agent": "noa"
-        })
-        
-        # Play Noa's transition message and wait for it to finish
-        speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        text_to_speech(speech_client, transition_message)
-        # Wait a moment to ensure the audio starts playing
-        time.sleep(1.5)
-    
-    # Important: Set sam_active to True BEFORE adding Sam's message
-    st.session_state.sam_active = True
-    
-    # Then add Sam's first message as a separate message
-    sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
-    st.session_state.messages.append({
-        "role": "assistant", 
-        "content": sam_intro,
-        "agent": "sam"
-    })
-    
-    # Play Sam's introduction audio
-    speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    text_to_speech(speech_client, sam_intro)
-    
-    # Force a rerun to update the UI
-    st.rerun()
-
-
-def switch_to_debrief():
-    """Function to properly transition from Sam to Noa for feedback"""
-    # Make sure no audio is playing before transitioning
-    stop_current_audio()
-    
-    # Set the state flags
-    st.session_state.sam_active = False
-    st.session_state.debrief_active = True
-    st.session_state.end_session_button_clicked = True
-    st.session_state.download_transcript = True
-    
-    # Add Noa's debrief introduction message
-    debrief_intro = "So, how do you think that went? That wasn't easy - Sam can be quite challenging! Let me give you some feedback on your performance."
-    st.session_state.messages.append({
-        "role": "assistant", 
-        "content": debrief_intro,
-        "agent": "noa"
-    })
-    
-    # Play Noa's debrief introduction
-    speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    text_to_speech(speech_client, debrief_intro)
-    
-    # Force a rerun to update the UI
-    st.rerun()
-
-
 def stop_current_audio():
     """Function to stop any currently playing audio"""
     if "is_speaking" in st.session_state and st.session_state.is_speaking:
@@ -392,6 +381,161 @@ def stop_current_audio():
         st.session_state.is_speaking = False
         # Small delay to ensure audio stops
         time.sleep(0.5)
+
+
+def switch_to_sam():
+    """Enhanced function to ensure proper transition to Sam with sequenced audio"""
+    # Prevent multiple transitions
+    if "transition_lock" in st.session_state and st.session_state.transition_lock:
+        return
+        
+    # Set the transition lock
+    st.session_state.transition_lock = True
+    
+    try:
+        # Make sure no audio is playing before transitioning
+        stop_current_audio()
+        time.sleep(0.5)  # Short delay to ensure audio is stopped
+        
+        # First, add Noa's introduction message if not already added
+        last_messages = st.session_state.messages[-3:]
+        noa_intro_already_added = any("introduce you to Sam" in msg.get("content", "") 
+                                  for msg in last_messages 
+                                  if msg.get("role") == "assistant" and msg.get("agent", "") != "sam")
+        
+        speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        
+        if not noa_intro_already_added:
+            # Add Noa's transition message to UI first
+            transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": transition_message,
+                "agent": "noa"
+            })
+            
+            # Force a refresh to show Noa's message before playing audio
+            st.rerun()
+        
+        # After rerun, we'll continue here
+        # Check if transition already handled
+        if "sam_active" in st.session_state and st.session_state.sam_active:
+            return
+        
+        # Play Noa's transition message
+        noa_transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
+        text_to_speech(speech_client, noa_transition_message)
+        
+        # Wait for Noa's audio to complete (estimated based on text length)
+        time.sleep(min(len(noa_transition_message) * 0.055, 4.0))  # Max 4 second wait
+        
+        # Important: Set sam_active to True BEFORE adding Sam's message
+        st.session_state.sam_active = True
+        
+        # Then add Sam's first message as a separate message
+        sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": sam_intro,
+            "agent": "sam"
+        })
+        
+        # Force a refresh to show Sam's message before playing audio
+        st.rerun()
+        
+    except Exception as e:
+        log.exception(f"Error in switch_to_sam: {e}")
+    finally:
+        # Release the transition lock
+        st.session_state.transition_lock = False
+
+
+def play_sam_intro():
+    """Function to play Sam's introduction audio after UI has loaded"""
+    if "sam_intro_played" not in st.session_state and "sam_active" in st.session_state and st.session_state.sam_active:
+        try:
+            # Find Sam's introduction message
+            sam_messages = [msg for msg in st.session_state.messages[-3:] 
+                         if msg.get("role") == "assistant" and msg.get("agent") == "sam"]
+            
+            if sam_messages:
+                sam_intro = sam_messages[0]["content"]
+                
+                # Make sure no audio is playing
+                stop_current_audio()
+                time.sleep(0.5)
+                
+                # Play Sam's introduction
+                speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                text_to_speech(speech_client, sam_intro)
+                
+                # Mark as played
+                st.session_state.sam_intro_played = True
+        except Exception as e:
+            log.exception(f"Error playing Sam intro: {e}")
+
+
+def switch_to_debrief():
+    """Enhanced function to properly transition from Sam to Noa for feedback with sequenced audio"""
+    # Prevent multiple transitions
+    if "transition_lock" in st.session_state and st.session_state.transition_lock:
+        return
+        
+    # Set the transition lock
+    st.session_state.transition_lock = True
+    
+    try:
+        # Make sure no audio is playing before transitioning
+        stop_current_audio()
+        time.sleep(0.5)  # Short delay to ensure audio is stopped
+        
+        # Set the state flags
+        st.session_state.sam_active = False
+        st.session_state.debrief_active = True
+        st.session_state.end_session_button_clicked = True
+        st.session_state.download_transcript = True
+        
+        # Add Noa's debrief introduction message to UI first
+        debrief_intro = "So, how do you think that went? That wasn't easy - Sam can be quite challenging! I was really impressed with how you managed to stay calm and professional throughout the conversation, especially when he brought up some tough concerns. Let me give you some feedback on your performance."
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": debrief_intro,
+            "agent": "noa"
+        })
+        
+        # Force a refresh to show Noa's message before playing audio
+        st.rerun()
+        
+    except Exception as e:
+        log.exception(f"Error in switch_to_debrief: {e}")
+    finally:
+        # Release the transition lock
+        st.session_state.transition_lock = False
+
+
+def play_debrief_intro():
+    """Function to play Noa's debrief intro audio after UI has loaded"""
+    if "debrief_intro_played" not in st.session_state and "debrief_active" in st.session_state and st.session_state.debrief_active:
+        try:
+            # Find Noa's debrief message
+            noa_messages = [msg for msg in st.session_state.messages[-3:] 
+                         if msg.get("role") == "assistant" and msg.get("agent") != "sam"]
+            
+            if noa_messages:
+                debrief_intro = noa_messages[0]["content"]
+                
+                # Make sure no audio is playing
+                stop_current_audio()
+                time.sleep(0.5)
+                
+                # Play Noa's debrief introduction
+                speech_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                text_to_speech(speech_client, debrief_intro)
+                
+                # Mark as played
+                st.session_state.debrief_intro_played = True
+        except Exception as e:
+            log.exception(f"Error playing debrief intro: {e}")
 
 
 # Initialize session state
@@ -440,6 +584,15 @@ def init_session():
         
     if "is_speaking" not in st.session_state:
         st.session_state.is_speaking = False
+        
+    if "transition_lock" not in st.session_state:
+        st.session_state.transition_lock = False
+        
+    if "welcome_audio_played" not in st.session_state:
+        st.session_state.welcome_audio_played = False
+        
+    if "last_audio_time" not in st.session_state:
+        st.session_state.last_audio_time = time.time()
 
 
 def setup_sidebar():
@@ -625,7 +778,7 @@ def process_user_query(text_client, speech_client, user_query):
             {"role": "assistant", "content": assistant_reply.strip(), "agent": current_agent}
         )
         
-        # Play audio response
+        # Play audio response AFTER the full text is shown
         text_to_speech(speech_client, assistant_reply)
         
         # Update ready_for_sam flag after Noa responds
@@ -664,7 +817,22 @@ def main():
 
         # Check if chat is active
         if st.session_state.chat_active:
+            # Display the messages
             show_messages()
+            
+            # Play welcome audio after UI has loaded (first time only)
+            if "welcome_audio_played" not in st.session_state or not st.session_state.welcome_audio_played:
+                play_welcome_audio()
+                
+            # Play Sam's intro after transition (first time only)
+            if ("sam_active" in st.session_state and st.session_state.sam_active and 
+                "sam_intro_played" not in st.session_state):
+                play_sam_intro()
+                
+            # Play debrief intro after transition (first time only)
+            if ("debrief_active" in st.session_state and st.session_state.debrief_active and 
+                "debrief_intro_played" not in st.session_state):
+                play_debrief_intro()
             
             # Show "Meet with Sam Richards" button when ready
             if (not st.session_state.sam_active and 
