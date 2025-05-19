@@ -253,31 +253,35 @@ def autoplay_audio(audio_data):
         # Generate a unique ID for this audio element to prevent caching issues
         audio_id = f"audio_{get_uuid()}"
         b64 = base64.b64encode(audio_data).decode("utf-8")
+        
+        # Create the HTML for the audio element with hidden script
         md = f"""
         <audio id="{audio_id}" autoplay>
         <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
         </audio>
-        <script>
-        const audio = document.getElementById('{audio_id}');
-        
-        // Function to report audio status
-        function reportAudioStatus() {{
-            if (audio && audio.ended) {{
-                window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
-            }}
-        }}
-        
-        // Set up event listeners
-        if (audio) {{
-            audio.addEventListener('ended', reportAudioStatus);
-            audio.addEventListener('error', reportAudioStatus);
-            
-            // Set a backup timeout in case the ended event doesn't fire
-            setTimeout(reportAudioStatus, {len(audio_data) * 10});
-        }}
-        </script>
         """
         st.markdown(md, unsafe_allow_html=True)
+        
+        # Add the script separately using components.html to avoid it being displayed
+        audio_script = f"""
+        <script>
+        (function() {{
+            const audio = document.getElementById('{audio_id}');
+            if (audio) {{
+                audio.addEventListener('ended', function() {{
+                    window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
+                }});
+                audio.addEventListener('error', function() {{
+                    window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
+                }});
+                setTimeout(function() {{
+                    window.parent.postMessage({{type: 'audioEnded', id: '{audio_id}'}}, '*');
+                }}, {min(len(audio_data) * 10, 30000)});
+            }}
+        }})();
+        </script>
+        """
+        st.components.v1.html(audio_script, height=0)
         return True
     except Exception as e:
         log.exception(f"Error in autoplay_audio: {e}")
@@ -366,16 +370,19 @@ def create_transcript_document():
 def stop_current_audio():
     """Function to stop any currently playing audio"""
     if "is_speaking" in st.session_state and st.session_state.is_speaking:
-        # Add JavaScript to stop all audio elements
-        st.markdown("""
+        # Add JavaScript to stop all audio elements using components.html
+        stop_script = """
         <script>
-        var audioElements = document.querySelectorAll('audio');
-        audioElements.forEach(function(audio) {
-            audio.pause();
-            audio.currentTime = 0;
-        });
+        (function() {
+            var audioElements = document.querySelectorAll('audio');
+            audioElements.forEach(function(audio) {
+                audio.pause();
+                audio.currentTime = 0;
+            });
+        })();
         </script>
-        """, unsafe_allow_html=True)
+        """
+        st.components.v1.html(stop_script, height=0)
         
         # Reset the speaking state
         st.session_state.is_speaking = False
@@ -423,7 +430,7 @@ def switch_to_sam():
             return
         
         # Play Noa's transition message
-        noa_transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
+        noa_transition_message = st.session_state.messages[-1]["content"]
         text_to_speech(speech_client, noa_transition_message)
         
         # Wait for Noa's audio to complete (estimated based on text length)
@@ -440,6 +447,9 @@ def switch_to_sam():
             "agent": "sam"
         })
         
+        # Set flag to indicate Sam's intro needs to be played
+        st.session_state.sam_intro_needs_playing = True
+        
         # Force a refresh to show Sam's message before playing audio
         st.rerun()
         
@@ -452,10 +462,10 @@ def switch_to_sam():
 
 def play_sam_intro():
     """Function to play Sam's introduction audio after UI has loaded"""
-    if "sam_intro_played" not in st.session_state and "sam_active" in st.session_state and st.session_state.sam_active:
+    if "sam_intro_needs_playing" in st.session_state and st.session_state.sam_intro_needs_playing:
         try:
             # Find Sam's introduction message
-            sam_messages = [msg for msg in st.session_state.messages[-3:] 
+            sam_messages = [msg for msg in st.session_state.messages 
                          if msg.get("role") == "assistant" and msg.get("agent") == "sam"]
             
             if sam_messages:
@@ -470,7 +480,7 @@ def play_sam_intro():
                 text_to_speech(speech_client, sam_intro)
                 
                 # Mark as played
-                st.session_state.sam_intro_played = True
+                st.session_state.sam_intro_needs_playing = False
         except Exception as e:
             log.exception(f"Error playing Sam intro: {e}")
 
@@ -503,6 +513,9 @@ def switch_to_debrief():
             "agent": "noa"
         })
         
+        # Set flag to indicate debrief intro needs to be played
+        st.session_state.debrief_intro_needs_playing = True
+        
         # Force a refresh to show Noa's message before playing audio
         st.rerun()
         
@@ -515,10 +528,10 @@ def switch_to_debrief():
 
 def play_debrief_intro():
     """Function to play Noa's debrief intro audio after UI has loaded"""
-    if "debrief_intro_played" not in st.session_state and "debrief_active" in st.session_state and st.session_state.debrief_active:
+    if "debrief_intro_needs_playing" in st.session_state and st.session_state.debrief_intro_needs_playing:
         try:
             # Find Noa's debrief message
-            noa_messages = [msg for msg in st.session_state.messages[-3:] 
+            noa_messages = [msg for msg in st.session_state.messages[-2:] 
                          if msg.get("role") == "assistant" and msg.get("agent") != "sam"]
             
             if noa_messages:
@@ -533,7 +546,7 @@ def play_debrief_intro():
                 text_to_speech(speech_client, debrief_intro)
                 
                 # Mark as played
-                st.session_state.debrief_intro_played = True
+                st.session_state.debrief_intro_needs_playing = False
         except Exception as e:
             log.exception(f"Error playing debrief intro: {e}")
 
@@ -824,14 +837,12 @@ def main():
             if "welcome_audio_played" not in st.session_state or not st.session_state.welcome_audio_played:
                 play_welcome_audio()
                 
-            # Play Sam's intro after transition (first time only)
-            if ("sam_active" in st.session_state and st.session_state.sam_active and 
-                "sam_intro_played" not in st.session_state):
+            # Play Sam's intro after transition (if needed)
+            if "sam_intro_needs_playing" in st.session_state and st.session_state.sam_intro_needs_playing:
                 play_sam_intro()
                 
-            # Play debrief intro after transition (first time only)
-            if ("debrief_active" in st.session_state and st.session_state.debrief_active and 
-                "debrief_intro_played" not in st.session_state):
+            # Play debrief intro after transition (if needed)
+            if "debrief_intro_needs_playing" in st.session_state and st.session_state.debrief_intro_needs_playing:
                 play_debrief_intro()
             
             # Show "Meet with Sam Richards" button when ready
