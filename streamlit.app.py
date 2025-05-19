@@ -88,7 +88,7 @@ def password_entered():
         
         # Add Noa's automatic first message to welcome the student
         if len(st.session_state.messages) <= 1:  # Only system message exists
-            welcome_message = "Hi there! I'm Noa Martinez, one of the clinical instructors here at Columbia. I'll be guiding you through today's simulation. We're going to practice some change management skills in a challenging setting - implementing a flu vaccination program at a county corrections facility. Before we start, do you have any questions about the scenario or would you like to discuss your approach?"
+            welcome_message = "Hi there! I'm Noa Martinez, one of the clinical instructors here at Columbia. I'll be guiding you through today's simulation. We're going to practice some change management skills in a challenging setting - implementing a flu vaccination program at a county corrections facility. You'll be meeting with Sam Richards, the Operations Manager there. He's been in his position for 14 years and, between us, he's known for being pretty resistant to change. Your goal is to persuade him to support your vaccination program despite his objections. Do you have any questions before we start, or would you like to discuss your approach?"
             st.session_state.messages.append({
                 "role": "assistant", 
                 "content": welcome_message,
@@ -278,21 +278,27 @@ def create_transcript_document():
         return buffer
 
 
-def meet_sam_richards():
-    """Function to transition to Sam Richards"""
-    # First, add Noa's introduction message
-    transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
-    st.session_state.messages.append({
-        "role": "assistant", 
-        "content": transition_message,
-        "agent": "noa"
-    })
+def switch_to_sam():
+    """Critical function to ensure proper transition to Sam"""
+    # First, add Noa's introduction message (only if not already added)
+    last_messages = st.session_state.messages[-3:]
+    noa_intro_already_added = any("introduce you to Sam" in msg.get("content", "") 
+                               for msg in last_messages 
+                               if msg.get("role") == "assistant" and msg.get("agent") != "sam")
     
-    # Only after adding Noa's message, set Sam as active
+    if not noa_intro_already_added:
+        transition_message = "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Good luck!"
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": transition_message,
+            "agent": "noa"
+        })
+    
+    # Important: Set sam_active to True BEFORE adding Sam's message
     st.session_state.sam_active = True
     
     # Then add Sam's first message as a separate message
-    sam_intro = "Hey there, I'm Sam Richards. So, you're here to talk about this new flu vaccination program, right? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work. What's your plan here?"
+    sam_intro = "Hello, I'm Sam Richards, Operations Manager here at the County Corrections Facility. I understand you're here about some flu vaccination program? Look, I've got 500 inmates to manage, an understaffed facility, and security concerns you wouldn't believe. I'm not sure how you expect this to work in our environment. What exactly are you proposing?"
     st.session_state.messages.append({
         "role": "assistant", 
         "content": sam_intro,
@@ -343,6 +349,9 @@ def init_session():
     
     if "ready_for_sam" not in st.session_state:
         st.session_state.ready_for_sam = False
+        
+    if "transition_attempted" not in st.session_state:
+        st.session_state.transition_attempted = False
 
 
 def setup_sidebar():
@@ -380,23 +389,45 @@ def setup_sidebar():
 
 
 def check_readiness_for_sam():
-    """Check if Noa has asked if the student is ready to meet Sam"""
-    if "messages" in st.session_state and len(st.session_state.messages) >= 3:
-        last_noa_messages = [msg for msg in st.session_state.messages[-3:] 
-                          if msg["role"] == "assistant" and ("agent" not in msg or msg["agent"] == "noa")]
-        if last_noa_messages:
-            last_message = last_noa_messages[-1]["content"].lower()
-            ready_phrases = [
-                "ready to start",
-                "ready to meet sam",
-                "would you like to meet sam",
-                "ready for the simulation",
-                "are you ready",
-                "shall we begin"
-            ]
-            for phrase in ready_phrases:
-                if phrase in last_message:
-                    return True
+    """Check if conversation has reached a point where transition to Sam should happen"""
+    # If we've already attempted transition but it didn't work, force it
+    if "transition_attempted" in st.session_state and st.session_state.transition_attempted:
+        return True
+        
+    # If user has indicated readiness in recent messages
+    if "messages" in st.session_state and len(st.session_state.messages) >= 2:
+        # Look at the last 3 user messages to check for readiness signals
+        user_messages = [msg for msg in st.session_state.messages[-6:] if msg["role"] == "user"]
+        if user_messages:
+            for msg in user_messages:
+                user_text = msg["content"].lower()
+                ready_phrases = [
+                    "ready to meet", "meet sam", "meet with sam", "start simulation", 
+                    "begin simulation", "let's start", "i'm ready", "ready to begin",
+                    "begin", "start", "yes", "sure", "okay", "ok", "yep", "yeah"
+                ]
+                for phrase in ready_phrases:
+                    if phrase in user_text:
+                        # Mark that we've detected readiness and attempted transition
+                        st.session_state.transition_attempted = True
+                        return True
+                    
+        # If we have enough conversation history, Noa should ask if ready
+        if len(st.session_state.messages) >= 6:
+            # Check if the most recent Noa message asks about readiness
+            noa_messages = [msg for msg in st.session_state.messages[-3:] 
+                         if msg["role"] == "assistant" and ("agent" not in msg or msg["agent"] == "noa")]
+            if noa_messages:
+                for msg in noa_messages:
+                    noa_text = msg["content"].lower()
+                    if any(phrase in noa_text for phrase in ["ready to start", "ready to meet", "would you like to meet", "shall we begin"]):
+                        # Noa asked if ready; next user message could trigger transition
+                        return True
+            
+            # If we've had a lot of back and forth with Noa, suggest transition
+            if len(st.session_state.messages) >= 10:
+                return True
+    
     return False
 
 
@@ -442,11 +473,13 @@ def process_user_query(text_client, speech_client, user_query):
     
     # 1. Transition from Noa to Sam (pre-brief to simulation)
     if not st.session_state.sam_active and not st.session_state.debrief_active:
-        # Check if Noa asked if they're ready and user gave an affirmative response
-        noa_asked_ready = check_readiness_for_sam()
+        # Enhanced pattern matching for readiness signals
+        ready_pattern = r"ready|begin|start|yes|yeah|sure|ok|okay|yep|let'?s|meet sam|proceed"
         
-        # If Noa asked if they're ready, check for any affirmative response
-        if noa_asked_ready and re.search(r"yes|yeah|sure|ok|okay|yep|let'?s|ready|begin|start", user_query.lower()):
+        if re.search(ready_pattern, user_query.lower()):
+            # Mark that we detected a readiness signal
+            st.session_state.transition_attempted = True
+            
             # Display the user's query first
             with st.chat_message("Public Health Nurse", avatar="assets/User.png"):
                 st.markdown(user_query)
@@ -455,7 +488,7 @@ def process_user_query(text_client, speech_client, user_query):
             st.session_state.messages.append({"role": "user", "content": user_query.strip()})
             
             # Then transition to Sam
-            meet_sam_richards()
+            switch_to_sam()
             return  # Skip further processing since we're handling the transition
     
     # 2. Transition from Sam to Noa (simulation to debrief)
@@ -547,7 +580,7 @@ def main():
                              type="primary", 
                              use_container_width=True,
                              help="Click to start your meeting with Sam Richards"):
-                    meet_sam_richards()
+                    switch_to_sam()
 
             # Check if there's a manual input and process it
             if "manual_input" in st.session_state and st.session_state.manual_input:
