@@ -1,131 +1,126 @@
-# Implementation Guide for Instructors
+# Implementation Guide: Updated Simulation Flow
 
-This guide provides detailed instructions for setting up and customizing the Corrections Facility Simulation for your students.
+This document explains the changes made to the simulation to implement the new flow with Noa's pre-briefing and debriefing features, along with more natural conversation patterns.
 
-## Setup Process
+## New Simulation Flow
 
-### 1. GitHub Setup
-1. Create a GitHub account at [github.com](https://github.com/signup) if you don't have one
-2. Fork the simulation repository (link provided separately)
-3. The repository contains all necessary files for the simulation
+The updated simulation now follows this sequence:
 
-### 2. OpenAI API Setup
-1. Create an account at [OpenAI](https://platform.openai.com/signup)
-2. Navigate to the API section of your account
-3. Create a new API key and save it securely
-4. Purchase credits (typically $5-10 is sufficient for several student sessions)
+1. **Pre-briefing with Noa (Start)**: 
+   - Students first interact with Noa Martinez, a supportive nursing instructor
+   - Noa introduces the scenario and helps prepare the student
+   - Students can ask questions and discuss strategy before the simulation
 
-### 3. Streamlit Setup
-1. Create an account at [Streamlit](https://streamlit.io/)
-2. Click "New app"
-3. Connect your GitHub repository
-4. Configure your app:
-   - App name: Choose a meaningful name
-   - Repository: Your forked GitHub repository
-   - Branch: main
-   - Main file path: streamlit_app.py
-5. Under "Advanced Settings" > "Secrets", add:
-   ```
-   OPENAI_API_KEY = "your_api_key_here"
-   password = "your_app_password_here"
-   ```
+2. **Transition to Sam**:
+   - When ready, the student can say "I'd like to meet with Sam Richards now" (or similar phrases)
+   - The system automatically switches to Sam Richards
 
-### 4. Asset Preparation
-1. Add the following images to the `assets` folder in your repository:
-   - Sam.jpg - A photo of a male corrections manager (provided)
-   - Noa.jpg - A photo of a female nursing instructor (provided)
-   - User.png - A generic healthcare professional icon
-   - unlock.mp3 - A short sound file for login success (optional)
+3. **Simulation with Sam**:
+   - Student practices implementing the flu vaccination program
+   - Sam demonstrates natural resistance patterns
+   - Student applies change management techniques
 
-## Customization Options
+4. **Transition to Debrief**:
+   - Student can click "End Session & Get Feedback" button
+   - Or use phrases like "ready for feedback" or "goodbye"
+   - System automatically switches back to Noa
 
-### Modifying the Scenario
-Edit the `settings.toml` file to customize:
+5. **Debriefing with Noa (End)**:
+   - Noa provides personalized feedback on performance
+   - Student can ask questions about the feedback
+   - Transcript download becomes available
 
-1. **Title and Introduction**:
-   - Change the `title` field for the app header
-   - Modify the `intro` field for pre-simulation instructions
+## Key Changes Made
 
-2. **Sam Richards (Resistant Manager)**:
-   - Adjust objections in the `instruction` field
-   - Modify the `[sam]` section for name and voice
-   - Customize the `[sidebar]` information
+### 1. Agent Improvements
 
-3. **Noa Martinez (Instructor)**:
-   - Modify feedback approach in the `noa_instruction` field
-   - Adjust the `[noa]` section for name and voice
+**Noa Martinez**:
+- Changed to use "nova" voice for a more youthful Latina sound
+- Enhanced instructions for more natural, mentor-like conversations
+- Added pre-briefing and debriefing instructional content
+- Improved emotional responsiveness and personality
 
-### Advanced Customization
-For deeper changes:
+**Sam Richards**:
+- Kept "onyx" voice but enhanced naturalness instructions
+- Improved to sound like a real middle manager, not a robotic AI
+- Added natural resistance patterns with conversational interruptions
+- Enhanced personality and emotional variability
 
-1. **Voice Options**: Choose from:
-   - alloy, echo, fable, onyx, nova, shimmer
-   
-2. **Model Settings**:
-   - Adjust the temperature parameter (0.7 is recommended)
-   - Keep using "gpt-4o" for best results
+### 2. Technical Enhancements
 
-3. **UI Customization**:
-   - Modify `style.css` for visual changes
-   - Update messages and warnings in `settings.toml`
+**Agent Transitions**:
+- Added transition trigger phrases for moving between agents
+- Created multi-phase conversation flow management
+- Updated sidebar to reflect current active agent
 
-## Integration with Your Course
+**Response Speed**:
+- Limited max_tokens parameter for faster response generation
+- Optimized streaming for better conversation flow
+- Reduced unnecessary computation
 
-### Before the Simulation
-1. Share the `student-guide.md` document with students
-2. Assign preparatory readings on:
-   - Change management theory
-   - Correctional healthcare challenges
-   - Communication strategies for resistant stakeholders
+**UI Improvements**:
+- Enhanced CSS styling for more natural chat appearance
+- Different styling for each agent's messages
+- Improved button designs and interactions
+- Dynamic placeholder text based on current agent
 
-### During the Simulation
-1. Provide students with:
-   - The URL to your Streamlit app
-   - The password you set in Streamlit secrets
-   - A time frame for completing the simulation
+## Implementation Files
 
-### After the Simulation
-1. Have students submit:
-   - The downloaded transcript
-   - Responses to the self-reflection questions
-   - Any additional analysis you require
+1. **settings.toml**: Contains updated agent instructions and configuration
+   - Separate `sam_instruction` and `noa_instruction` parameters
+   - Enhanced agent personalities and conversation patterns
+   - Updated sidebar information for both agents
 
-2. Conduct a debrief session to discuss:
-   - Common challenges faced
-   - Successful strategies
-   - Lessons learned
-   - Real-world applications
+2. **streamlit_app.py**: Modified application logic for the new flow
+   - Added transition detection for both phases
+   - Implemented separate agent state tracking
+   - Enhanced response processing and display
 
-## Assessment Framework
+3. **style.css**: Improved visual styling
+   - Distinct styles for each agent's messages
+   - Enhanced button designs and interactions
+   - Better overall user experience
 
-### Sample Rubric
+## Transition Triggers
 
-| Criteria | Excellent (5) | Satisfactory (3) | Needs Improvement (1) |
-|----------|---------------|------------------|------------------------|
-| **Change Management Skills** | Creates urgent case for change with specific benefits to corrections facility | Makes general case for change with some facility benefits | Focuses on public health benefits without facility context |
-| **Communication Skills** | Maintains professionalism throughout, actively listens, adapts approach | Generally professional, acknowledges concerns, limited adaptation | Becomes defensive, minimal listening, rigid approach |
-| **Problem-Solving** | Identifies underlying issues, offers creative solutions | Addresses some concerns with workable solutions | Focuses only on stated objections, few solutions |
-| **Relationship Building** | Builds rapport despite resistance, finds common ground | Some rapport-building attempts, limited common ground | Little effort to connect with Sam or understand his perspective |
-| **Overall Effectiveness** | Achieves clear progress or commitment | Makes some progress | Makes little headway with Sam |
+The application now recognizes these phrases for transitions:
+
+1. **Noa to Sam** (any of these phrases will work):
+   - "I'd like to meet with Sam Richards now"
+   - "Ready to meet with Sam"
+   - "Talk to Sam"
+   - "Start simulation"
+   - "Begin simulation"
+
+2. **Sam to Noa** (any of these phrases will work):
+   - "Ready for feedback"
+   - "End session"
+   - "Finish"
+   - "Complete"
+   - "Goodbye"
+
+Students can also click the "End Session & Get Feedback" button to transition from Sam to Noa.
+
+## Testing the Flow
+
+To test the complete flow:
+
+1. Start the application and log in
+2. Interact with Noa for pre-briefing
+3. Say "I'd like to meet with Sam Richards now"
+4. Engage with Sam in the simulation
+5. Either say "Ready for feedback" or click the "End Session" button
+6. Receive feedback from Noa
+7. Download the transcript to verify all interactions are captured
 
 ## Troubleshooting
 
-### Common Issues
+If the transitions don't work correctly:
+- Check that the trigger phrases are being detected in the `process_user_query` function
+- Verify that the state flags (`sam_active` and `debrief_active`) are updating correctly
+- Ensure the system messages are switching between the different agent instructions
 
-1. **API Key Problems**:
-   - Error: "OpenAI API key not found"
-   - Solution: Check that the key is correctly added to Streamlit secrets
-
-2. **Voice Not Working**:
-   - Error: No audio playing
-   - Solution: Verify browser permissions for audio playback
-
-3. **Transition Issues**:
-   - Problem: Not switching from Sam to Noa
-   - Solution: Verify that students are using exact phrase "Goodbye. Thank you for coming."
-
-4. **Deployment Issues**:
-   - Problem: App not loading
-   - Solution: Check GitHub connection in Streamlit, verify main file path
-
-For additional technical support, refer to [Streamlit documentation](https://docs.streamlit.io/) or [OpenAI documentation](https://platform.openai.com/docs/).
+If the voices sound unnatural:
+- Adjust the agent instructions to emphasize more natural speaking patterns
+- Consider fine-tuning the temperature parameter (higher for more variety)
+- Ensure the correct voice parameters are being passed to the text-to-speech function
