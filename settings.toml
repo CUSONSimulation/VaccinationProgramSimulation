@@ -17,7 +17,7 @@ assistant_avatar = "assets/Noa.jpg"
 # Intro message will be displayed before users start chatting.
 
 intro = '''
-## Welcome to the Change Management AI Simulation
+## Welcome to the Implementing Flu Vaccination Simulation
 
 This AI-powered simulation helps you practice advanced communication and change management skills in a challenging healthcare environment. You'll engage with a resistant stakeholder to implement a public health initiative in a correctional facility. This simulation prepares you for real-world scenarios where you'll need to navigate resistance, build alliances, and drive meaningful change.
 
