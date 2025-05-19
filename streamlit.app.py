@@ -124,6 +124,19 @@ def local_css(file_name):
         st.markdown("""
         <style>
         body {font-family: Arial, sans-serif;}
+        .meet-sam-button {
+            background-color: #0e4c92;
+            color: white;
+            font-weight: bold;
+            padding: 0.75rem 1.5rem;
+            border-radius: 5px;
+            text-align: center;
+            margin: 20px 0;
+            cursor: pointer;
+        }
+        .meet-sam-button:hover {
+            background-color: #0a3a73;
+        }
         </style>
         """, unsafe_allow_html=True)
 
@@ -251,6 +264,21 @@ def create_transcript_document():
         return buffer
 
 
+def meet_sam_richards():
+    """Function to transition to Sam Richards"""
+    st.session_state.sam_active = True
+    # Add an automatic message from the user to the chat history
+    st.session_state.messages.append({"role": "user", "content": "I'm ready to meet with Sam Richards now."})
+    # Also add automatic transition message from Noa
+    st.session_state.messages.append({
+        "role": "assistant", 
+        "content": "Great! I'll introduce you to Sam now. Remember to focus on addressing his specific concerns while emphasizing the benefits to his facility. Don't get discouraged if he seems resistant at first—that's part of the challenge! Good luck, and I'll check back with you after your meeting.",
+        "agent": "noa"
+    })
+    # Force a rerun to update the UI
+    st.rerun()
+
+
 # Initialize session state
 def init_session():
     if "show_intro" not in st.session_state:
@@ -288,6 +316,9 @@ def init_session():
         st.session_state.messages = [
             {"role": "system", "content": st.session_state.settings.get("instruction", "You are a helpful assistant")}
         ]
+    
+    if "ready_for_sam" not in st.session_state:
+        st.session_state.ready_for_sam = False
 
 
 def setup_sidebar():
@@ -322,6 +353,27 @@ def setup_sidebar():
                 st.form_submit_button("Start Chat", on_click=password_entered)
             if "password_correct" in st.session_state and not st.session_state.password_correct:
                 st.error("😕 Invalid Code")
+
+
+def check_readiness_for_sam():
+    """Check if conversation with Noa has reached a point where we can offer to meet Sam"""
+    if "messages" in st.session_state and len(st.session_state.messages) >= 4:
+        # Look at the last 2 assistant messages to see if Noa has done introduction
+        assistant_messages = [msg for msg in st.session_state.messages if msg["role"] == "assistant"]
+        if len(assistant_messages) >= 2:
+            last_message = assistant_messages[-1]["content"].lower()
+            # Check if Noa's last message indicates readiness
+            intro_phrases = [
+                "introduce you to sam",
+                "meet with sam",
+                "ready to start",
+                "good luck",
+                "let's get you started"
+            ]
+            for phrase in intro_phrases:
+                if phrase in last_message:
+                    return True
+    return False
 
 
 def show_messages():
@@ -407,6 +459,10 @@ def process_user_query(text_client, speech_client, user_query):
         
         # Play audio response
         text_to_speech(speech_client, assistant_reply)
+        
+        # Update ready_for_sam flag after Noa responds
+        if not st.session_state.sam_active and not st.session_state.debrief_active:
+            st.session_state.ready_for_sam = check_readiness_for_sam()
 
 
 def main():
@@ -441,6 +497,19 @@ def main():
         # Check if chat is active
         if st.session_state.chat_active:
             show_messages()
+            
+            # Show "Meet with Sam Richards" button when ready
+            if (not st.session_state.sam_active and 
+                not st.session_state.debrief_active and 
+                "ready_for_sam" in st.session_state and 
+                st.session_state.ready_for_sam):
+                
+                # Create a prominent button to meet Sam
+                if st.button("👨‍💼 Meet with Sam Richards", 
+                             type="primary", 
+                             use_container_width=True,
+                             help="Click to start your meeting with Sam Richards"):
+                    meet_sam_richards()
 
             # Check if there's a manual input and process it
             if "manual_input" in st.session_state and st.session_state.manual_input:
@@ -467,7 +536,7 @@ def main():
 
             # Handle end session button - only show during Sam conversation
             if "sam_active" in st.session_state and st.session_state.sam_active and "debrief_active" in st.session_state and not st.session_state.debrief_active:
-                if st.button("End Session & Get Feedback"):
+                if st.button("End Session & Get Feedback", type="primary", use_container_width=True):
                     st.session_state.sam_active = False
                     st.session_state.debrief_active = True
                     st.session_state.end_session_button_clicked = True
